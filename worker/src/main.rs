@@ -1,7 +1,12 @@
 mod config;
 mod deps;
 mod disk;
+mod guest_agent;
+mod image;
+mod session;
 mod spoof;
+mod update;
+mod verify;
 mod vm;
 
 use clap::{Parser, Subcommand};
@@ -120,6 +125,113 @@ enum Commands {
         #[arg(long)]
         virtiofs_source: Option<String>,
     },
+
+    /// Verify hardware spoofing inside a running VM
+    Verify {
+        /// VM name
+        name: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Ping the QEMU guest agent inside a VM
+    GaPing {
+        /// VM name
+        name: String,
+    },
+
+    /// Execute a command inside a VM via the guest agent
+    GaExec {
+        /// VM name
+        name: String,
+
+        /// Command to execute
+        #[arg(short, long)]
+        cmd: String,
+    },
+
+    /// Inject a Steam session into a running VM for auto-login
+    InjectSession {
+        /// VM name
+        name: String,
+
+        /// Steam account name
+        #[arg(long)]
+        account: String,
+
+        /// Steam refresh token
+        #[arg(long)]
+        token: String,
+
+        /// Steam ID (64-bit)
+        #[arg(long)]
+        steam_id: String,
+
+        /// Display name
+        #[arg(long, default_value = "FarmBot")]
+        persona: String,
+    },
+
+    /// Switch a VM to a different Steam account
+    SwitchAccount {
+        /// VM name
+        name: String,
+
+        /// Steam account name
+        #[arg(long)]
+        account: String,
+
+        /// Steam refresh token
+        #[arg(long)]
+        token: String,
+
+        /// Steam ID (64-bit)
+        #[arg(long)]
+        steam_id: String,
+
+        /// Display name
+        #[arg(long, default_value = "FarmBot")]
+        persona: String,
+    },
+
+    /// Check CS2 update status
+    Cs2Status {
+        /// Shared CS2 directory
+        #[arg(long, default_value = "/opt/cs2-shared")]
+        shared_dir: String,
+    },
+
+    /// Update CS2 in the shared directory
+    Cs2Update {
+        /// Shared CS2 directory
+        #[arg(long, default_value = "/opt/cs2-shared")]
+        shared_dir: String,
+
+        /// VM names to notify of the update
+        #[arg(long)]
+        vms: Vec<String>,
+    },
+
+    /// Generate cloud-init ISO for VM provisioning
+    CloudInit {
+        /// Output ISO path
+        #[arg(short, long)]
+        output: String,
+
+        /// VM name (used for instance metadata)
+        #[arg(long)]
+        vm_name: String,
+
+        /// Farm user name inside VM
+        #[arg(long, default_value = "farmuser")]
+        user: String,
+
+        /// Farm user password
+        #[arg(long, default_value = "farmpass")]
+        password: String,
+    },
 }
 
 fn main() {
@@ -171,6 +283,31 @@ fn main() {
             &disk_dir,
             virtiofs_source.as_deref(),
         ),
+        Commands::Verify { name, json } => cmd_verify(&name, json),
+        Commands::GaPing { name } => cmd_ga_ping(&name),
+        Commands::GaExec { name, cmd } => cmd_ga_exec(&name, &cmd),
+        Commands::InjectSession {
+            name,
+            account,
+            token,
+            steam_id,
+            persona,
+        } => cmd_inject_session(&name, &account, &token, &steam_id, &persona),
+        Commands::SwitchAccount {
+            name,
+            account,
+            token,
+            steam_id,
+            persona,
+        } => cmd_switch_account(&name, &account, &token, &steam_id, &persona),
+        Commands::Cs2Status { shared_dir } => cmd_cs2_status(&shared_dir),
+        Commands::Cs2Update { shared_dir, vms } => cmd_cs2_update(&shared_dir, &vms),
+        Commands::CloudInit {
+            output,
+            vm_name,
+            user,
+            password,
+        } => cmd_cloud_init(&output, &vm_name, &user, &password),
     }
 }
 
@@ -351,4 +488,143 @@ fn cmd_setup(
         println!();
     }
     println!("Setup complete. {count} VMs created.");
+}
+
+fn cmd_verify(name: &str, json: bool) {
+    let hw = spoof::generate_identity(name);
+    match verify::verify_spoofing(name, &hw) {
+        Ok(report) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                println!("Spoofing verification for VM '{name}':\n");
+                for check in &report.checks {
+                    let status = if check.passed { "✓" } else { "✗" };
+                    println!("  {status} {}", check.component);
+                    if !check.passed {
+                        println!("      expected: {}", check.expected);
+                        println!("      actual:   {}", check.actual);
+                    }
+                }
+                println!();
+                if report.all_passed {
+                    println!("All spoofing checks passed.");
+                } else {
+                    let failed = report.checks.iter().filter(|c| !c.passed).count();
+                    println!("{failed} check(s) failed.");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Verification failed for VM '{name}': {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_ga_ping(name: &str) {
+    match guest_agent::ping(name) {
+        Ok(true) => println!("Guest agent is responding in VM '{name}'."),
+        Ok(false) => {
+            println!("Guest agent is NOT responding in VM '{name}'.");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error pinging guest agent: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_ga_exec(name: &str, cmd: &str) {
+    match guest_agent::exec(name, cmd) {
+        Ok(result) => {
+            if !result.stdout.is_empty() {
+                print!("{}", result.stdout);
+            }
+            if !result.stderr.is_empty() {
+                eprint!("{}", result.stderr);
+            }
+            std::process::exit(result.exit_code);
+        }
+        Err(e) => {
+            eprintln!("Guest exec failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_inject_session(name: &str, account: &str, token: &str, steam_id: &str, persona: &str) {
+    let sess = session::SteamSession {
+        account_name: account.to_string(),
+        refresh_token: token.to_string(),
+        steam_id: steam_id.to_string(),
+        persona_name: persona.to_string(),
+    };
+    match session::inject_session(name, &sess, None) {
+        Ok(()) => println!("Session injected for account '{account}' in VM '{name}'."),
+        Err(e) => {
+            eprintln!("Session injection failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_switch_account(name: &str, account: &str, token: &str, steam_id: &str, persona: &str) {
+    let sess = session::SteamSession {
+        account_name: account.to_string(),
+        refresh_token: token.to_string(),
+        steam_id: steam_id.to_string(),
+        persona_name: persona.to_string(),
+    };
+    match session::switch_account(name, &sess, None) {
+        Ok(()) => println!("Switched VM '{name}' to account '{account}'."),
+        Err(e) => {
+            eprintln!("Account switch failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_cs2_status(shared_dir: &str) {
+    let cfg = update::UpdateConfig {
+        shared_dir: shared_dir.to_string(),
+        lock_file: format!("{shared_dir}/.update.lock"),
+        ..Default::default()
+    };
+    let status = update::check_status(&cfg);
+    println!("{}", serde_json::to_string_pretty(&status).unwrap());
+}
+
+fn cmd_cs2_update(shared_dir: &str, vms: &[String]) {
+    let cfg = update::UpdateConfig {
+        shared_dir: shared_dir.to_string(),
+        lock_file: format!("{shared_dir}/.update.lock"),
+        ..Default::default()
+    };
+
+    println!("Starting CS2 update in {shared_dir}...");
+    match update::perform_update(&cfg, vms) {
+        Ok(output) => {
+            println!("Update completed successfully.");
+            if !output.is_empty() {
+                println!("\nsteamcmd output:\n{output}");
+            }
+        }
+        Err(e) => {
+            eprintln!("Update failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_cloud_init(output: &str, vm_name: &str, user: &str, password: &str) {
+    match image::create_cloud_init_iso(output, vm_name, user, password) {
+        Ok(()) => println!("Cloud-init ISO created: {output}"),
+        Err(e) => {
+            eprintln!("Failed to create cloud-init ISO: {e}");
+            std::process::exit(1);
+        }
+    }
 }

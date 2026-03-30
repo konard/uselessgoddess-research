@@ -15,12 +15,21 @@ pub struct VmConfig {
 
 impl VmConfig {
     /// Produce libvirt-compatible XML domain definition.
+    ///
+    /// Generates anti-detection hardened XML with:
+    /// - KVM hidden, hypervisor CPUID disabled
+    /// - Hyper-V vendor ID spoofed to "GenuineIntel"
+    /// - SMBIOS system info spoofing with sysinfo mode
+    /// - e1000e NIC (not virtio-net, which leaks VM identity)
+    /// - memballoon disabled (its presence signals VM)
+    /// - Memory backing for virtiofs DAX support
+    /// - QEMU guest agent channel for host-to-guest communication
     pub fn to_xml(&self) -> String {
         let virtiofs_xml = match (&self.virtiofs_source, &self.virtiofs_tag) {
             (Some(src), Some(tag)) => format!(
                 r#"
     <filesystem type='mount' accessmode='passthrough'>
-      <driver type='virtiofs'/>
+      <driver type='virtiofs' queue='1024'/>
       <source dir='{src}'/>
       <target dir='{tag}'/>
     </filesystem>"#
@@ -28,23 +37,40 @@ impl VmConfig {
             _ => String::new(),
         };
 
+        // Memory backing is required for virtiofs
+        let memory_backing_xml = if self.virtiofs_source.is_some() {
+            r#"
+  <memoryBacking>
+    <source type='memfd'/>
+    <access mode='shared'/>
+  </memoryBacking>
+"#
+        } else {
+            ""
+        };
+
         format!(
             r#"<domain type='kvm'>
   <name>{name}</name>
   <memory unit='MiB'>{ram}</memory>
   <vcpu placement='static'>{vcpus}</vcpu>
-
+{memory_backing}
   <os>
     <type arch='x86_64' machine='q35'>hvm</type>
+    <smbios mode='sysinfo'/>
     <boot dev='hd'/>
   </os>
 
   <features>
     <acpi/>
     <apic/>
+    <hyperv mode='custom'>
+      <vendor_id state='on' value='GenuineIntel'/>
+    </hyperv>
     <kvm>
       <hidden state='on'/>
     </kvm>
+    <vmport state='off'/>
   </features>
 
   <cpu mode='host-passthrough' check='none'>
@@ -87,12 +113,13 @@ impl VmConfig {
       <target type='virtio' name='org.qemu.guest_agent.0'/>
     </channel>
 
-    <memballoon model='virtio'/>
+    <memballoon model='none'/>
   </devices>
 </domain>"#,
             name = self.name,
             ram = self.ram_mb,
             vcpus = self.vcpus,
+            memory_backing = memory_backing_xml,
             smbios_mfr = xml_escape(&self.hw.smbios_manufacturer),
             smbios_prod = xml_escape(&self.hw.smbios_product),
             smbios_serial = xml_escape(&self.hw.smbios_serial),
@@ -163,6 +190,10 @@ mod tests {
         let xml = sample_config().to_xml();
         assert!(xml.contains("type='virtiofs'"));
         assert!(xml.contains("dir='cs2'"));
+        // virtiofs requires memory backing
+        assert!(xml.contains("<memoryBacking>"));
+        assert!(xml.contains("type='memfd'"));
+        assert!(xml.contains("mode='shared'"));
     }
 
     #[test]
@@ -171,7 +202,9 @@ mod tests {
         cfg.virtiofs_source = None;
         cfg.virtiofs_tag = None;
         let xml = cfg.to_xml();
-        assert!(!xml.contains("virtiofs"));
+        assert!(!xml.contains("type='virtiofs'"));
+        // No memory backing without virtiofs
+        assert!(!xml.contains("<memoryBacking>"));
     }
 
     #[test]
@@ -193,5 +226,38 @@ mod tests {
         // Basic well-formedness: starts and ends correctly
         assert!(xml.starts_with("<domain type='kvm'>"));
         assert!(xml.trim().ends_with("</domain>"));
+    }
+
+    #[test]
+    fn test_xml_contains_smbios_mode() {
+        let xml = sample_config().to_xml();
+        assert!(xml.contains("<smbios mode='sysinfo'/>"));
+    }
+
+    #[test]
+    fn test_xml_contains_hyperv_vendor_id() {
+        let xml = sample_config().to_xml();
+        assert!(xml.contains("<vendor_id state='on' value='GenuineIntel'/>"));
+        assert!(xml.contains("<hyperv mode='custom'>"));
+    }
+
+    #[test]
+    fn test_xml_contains_vmport_off() {
+        let xml = sample_config().to_xml();
+        assert!(xml.contains("<vmport state='off'/>"));
+    }
+
+    #[test]
+    fn test_xml_memballoon_none() {
+        let xml = sample_config().to_xml();
+        // memballoon should be disabled (signals VM presence)
+        assert!(xml.contains("<memballoon model='none'/>"));
+        assert!(!xml.contains("<memballoon model='virtio'/>"));
+    }
+
+    #[test]
+    fn test_xml_virtiofs_queue_size() {
+        let xml = sample_config().to_xml();
+        assert!(xml.contains("queue='1024'"));
     }
 }
