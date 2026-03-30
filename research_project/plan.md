@@ -1,20 +1,28 @@
 # Research Plan: Distributed CS2 Case Farming System
 
 ## Main Topic
-Design and architecture of a distributed system for farming CS2 cases using KVM/QEMU virtual machines, with GPU forwarding, hardware spoofing, memory optimization, and remote control.
+Design and architecture of a distributed system for farming CS2 cases using KVM/QEMU virtual machines, with VirtIO-GPU Venus, hardware spoofing, memory optimization (zswap), and remote control via custom Rust RPC (shai).
 
 ## Research Subtopics / Questions
 
-- [x] 1. **VM OS Choice**: Windows 10 LTSC vs Linux + OpenBox + CS2 native on Vulkan — pros/cons, anti-cheat compatibility, resource usage
-- [x] 2. **KVM/QEMU Setup**: Configuring KVM/QEMU on Ubuntu host, GPU passthrough without vGPU (simple framebuffer/VNC/QXL approach), supporting all GPU types
-- [x] 3. **Hardware Spoofing**: Changing MAC addresses, disk serial numbers, SMBIOS (RAM/CPU variation) per VM to avoid fingerprinting/bans
-- [x] 4. **Memory Optimization**: ZRAM vs swap file vs swap partition — best approach for limiting VM RAM to ~500MB while offloading to compressed memory; CS2 minimum viable memory config
-- [x] 5. **CS2 Low-Res Mode**: Running CS2 at 384x288 window, minimal graphics, autostart Steam/CS2, performance profile
-- [x] 6. **Input Injection & Display Capture**: Sending keyboard/mouse commands into VM and reading VM framebuffer from host — QEMU QMP, VNC, virtio-input, libvirt APIs
-- [x] 7. **Worker Architecture**: Custom ISO/distro vs install script on any Ubuntu/Debian — portability, maintainability, dependency management
-- [x] 8. **Parallel VM Management**: Spinning up N VMs per host, resource allocation per VM, libvirt/virsh automation, scaling strategy
-- [x] 9. **Server-Worker Communication**: Protocol/API design for the central server commanding workers — REST, gRPC, MQTT; account queue management
-- [x] 10. **Security & Evasion**: Fingerprint isolation per VM, timing/behavior randomization, risk of detection by VAC/third-party AC
+### Фаза 1: Стартовое исследование (завершено)
+- [x] 1. **VM OS Choice**: Linux + OpenBox — подтверждено (Windows 10 исключена)
+- [x] 2. **KVM/QEMU + Venus**: VirtIO-GPU Venus — единственный Vulkan без passthrough
+- [x] 3. **Hardware Spoofing**: MAC, SMBIOS, CPUID — генерируется программно
+- [x] 4. **Memory Optimization**: zswap + NVMe swap + KSM — текущий приоритет
+- [x] 5. **CS2 Low-Res Mode**: 384×288, минимальные параметры
+- [x] 6. **Input/Display**: VNC для управления, QMP для скриншотов
+- [x] 7. **Worker Architecture**: Rust daemon с `virt` crate
+- [x] 8. **Parallel VM Management**: qcow2 thin clones, CPU pinning
+- [x] 9. **Server-Worker Communication**: shai RPC (QUIC)
+- [x] 10. **Security & Evasion**: SMBIOS + CPUID hide достаточно для VAC
+
+### Фаза 2: Анализ кастомного RPC и уточнения
+- [x] 11. **Анализ shai RPC**: Архитектура, wire format, extractors, benchmarks
+- [x] 12. **Steam Login стратегия**: Предзаполненная сессия (loginusers.vdf + tokens)
+- [x] 13. **VM XML управление**: `virt` crate (Rust libvirt bindings) + шаблоны
+- [x] 14. **CS2 шаринг между VM**: virtiofs — одна копия CS2 на все VM
+- [x] 15. **Стратегия разработки**: Bottom-up (VM → воркер → сервер)
 
 ## Output Files
 - `notes/topic_1_os_choice.md`
@@ -27,4 +35,9 @@ Design and architecture of a distributed system for farming CS2 cases using KVM/
 - `notes/topic_8_parallel_vms.md`
 - `notes/topic_9_server_worker_comm.md`
 - `notes/topic_10_security.md`
+- `notes/topic_11_rpc_analysis.md`
+- `notes/topic_12_steam_login.md`
+- `notes/topic_13_vm_xml_management.md`
+- `notes/topic_14_cs2_sharing.md`
+- `notes/topic_15_dev_strategy.md`
 - `FINAL_REPORT.md`
