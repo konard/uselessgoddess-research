@@ -83,6 +83,10 @@ impl VmConfig {
     <input type='tablet' bus='virtio'/>
     <input type='keyboard' bus='virtio'/>{virtiofs}
 
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+
     <memballoon model='virtio'/>
   </devices>
 </domain>"#,
@@ -174,6 +178,13 @@ mod tests {
     fn test_xml_escape() {
         assert_eq!(xml_escape("A & B"), "A &amp; B");
         assert_eq!(xml_escape("<tag>"), "&lt;tag&gt;");
+    }
+
+    #[test]
+    fn test_xml_contains_guest_agent_channel() {
+        let xml = sample_config().to_xml();
+        assert!(xml.contains("org.qemu.guest_agent.0"));
+        assert!(xml.contains("<channel type='unix'>"));
     }
 
     #[test]

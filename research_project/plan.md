@@ -24,7 +24,21 @@ Design and architecture of a distributed system for farming CS2 cases using KVM/
 - [x] 14. **CS2 шаринг между VM**: virtiofs — одна копия CS2 на все VM
 - [x] 15. **Стратегия разработки**: Bottom-up (VM → воркер → сервер)
 
+### Фаза 3: Глубокий анализ — Mini-Worker vs External Control
+- [x] 16. **Steam Auth Deep Dive**: Анализ всех методов авторизации Steam (refresh tokens, QR, session files)
+- [x] 17. **QEMU Guest Agent**: Возможности управления VM снаружи через guest-agent
+- [x] 18. **Mini-Worker Architecture**: Анализ нужен ли мини-воркер внутри VM
+- [x] 19. **Steam Session Injection**: Способы инжекции сессий в VM
+- [x] 20. **Comparison Tables**: Таблицы сравнения для ключевых решений
+
 ## Output Files
+- `notes/topic_16_steam_auth_deep_dive.md`
+- `notes/topic_17_qemu_guest_agent.md`
+- `notes/topic_18_mini_worker_analysis.md`
+- `notes/topic_19_steam_session_injection.md`
+- `MINI_WORKER_REPORT.md` — Финальный отчёт по мини-воркеру
+
+## Предыдущие Output Files
 - `notes/topic_1_os_choice.md`
 - `notes/topic_2_kvm_setup.md`
 - `notes/topic_3_hardware_spoofing.md`
