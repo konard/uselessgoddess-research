@@ -47,21 +47,22 @@ impl Default for BaseImageConfig {
 }
 
 /// Default packages required for CS2 farming VM.
-fn default_packages() -> Vec<String> {
-    [
+fn default_packages() -> Vec<String> {[
         "qemu-guest-agent",
         "steam-installer",
         "mesa-vulkan-drivers",
-        "vulkan-tools",      // Утилиты для дебага (vulkaninfo)
+        "vulkan-tools",
         "mesa-utils",
-        "sway",              // Wayland композитор (замена gamescope)
-        "wayvnc",            // VNC-сервер для Wayland/sway
-        "xwayland",          // Прослойка для Steam (X11 на Wayland)
-        "foot",              // Лёгкий Wayland-терминал для отладки
+        "sway",
+        "wayvnc",
+        "xwayland",
+        "foot",
         "dmidecode",
         "lsblk",
         "curl",
         "ca-certificates",
+        "dbus-user-session", 
+        "seatd",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -114,8 +115,23 @@ packages:
   - dmidecode
 
 runcmd:
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
   # Включаем guest-agent
   - systemctl enable --now qemu-guest-agent
+  - usermod -aG video,render,input,_seatd {user} || true
+  - systemctl enable --now seatd.service
+
+  - |
+    cat > /usr/local/bin/zenity << 'EOF'
+    #!/bin/sh
+    exit 0
+    EOF
+  - chmod +x /usr/local/bin/zenity
 
   # FIX: Перемонтируем /tmp на диск, чтобы Steam не крашил VM при распаковке.
   # По умолчанию в cloud-образах /tmp — tmpfs (в RAM). Steam при первом запуске
@@ -143,55 +159,33 @@ runcmd:
   - |
     cat > /home/{user}/.config/sway/config << 'SWAYCONFIG'
     # Sway config for CS2 farming VM
-    # Используем Alt (Mod1) вместо Super (Mod4), чтобы не конфликтовать с хостом.
     set $mod Mod1
-
-    # Терминал для ручного тестирования
     set $term foot
     bindsym $mod+Return exec $term
-
-    # Закрыть окно
     bindsym $mod+Shift+q kill
-
-    # Фокус
     bindsym $mod+Left focus left
     bindsym $mod+Down focus down
     bindsym $mod+Up focus up
     bindsym $mod+Right focus right
-
-    # Перемещение окон
     bindsym $mod+Shift+Left move left
     bindsym $mod+Shift+Down move down
     bindsym $mod+Shift+Up move up
     bindsym $mod+Shift+Right move right
-
-    # Рабочие столы
     bindsym $mod+1 workspace number 1
     bindsym $mod+2 workspace number 2
     bindsym $mod+Shift+1 move container to workspace number 1
     bindsym $mod+Shift+2 move container to workspace number 2
-
-    # Полноэкранный режим
     bindsym $mod+f fullscreen toggle
-
-    # Перезагрузить sway
     bindsym $mod+Shift+c reload
-
-    # Выход из sway
     bindsym $mod+Shift+e exec swaynag -t warning -m 'Exit sway?' -B 'Yes' 'swaymsg exit'
-
-    # Отключаем title bars для максимизации области CS2
+    
     default_border none
     default_floating_border none
-
-    # Запускаем wayvnc на старте для удалённого доступа
-    exec wayvnc --output '*' 0.0.0.0 5900
-
-    # XWayland для Steam
     xwayland enable
-
-    # Устанавливаем разрешение виртуального дисплея
     output Virtual-1 mode 384x288
+    
+    # Запускаем wayvnc с небольшой задержкой на конкретный монитор
+    exec sh -c 'sleep 3 && wayvnc --output Virtual-1 0.0.0.0 5900'
     SWAYCONFIG
   - chown -R {user}:{user} /home/{user}/.config
 
@@ -205,14 +199,11 @@ runcmd:
     done
     rm -f /home/{user}/.steam/steam/config/.ready
 
-    # FIX: Направляем TMPDIR Steam на диск, а не в tmpfs,
-    # чтобы избежать OOM при распаковке обновлений
     export TMPDIR=/var/tmp
-
-    # Запускаем Steam и сразу стартуем CS2 (app 730)
-    # -nosound: отключаем звук для экономии ресурсов
-    # -novid: пропускаем заставку
-    exec steam -silent -no-browser -console \
+    
+    # Запускаем Steam через dbus-run-session. 
+    # Это создаст изолированную сессию D-Bus специально для Steam.
+    exec dbus-run-session -- steam -silent -no-browser -console \
         -applaunch 730 -nosound -novid -windowed -w 384 -h 288 +connect_lobby default
     LAUNCHER
   - chmod +x /opt/farm/steam-launcher.sh
@@ -223,26 +214,32 @@ runcmd:
     cat > /etc/systemd/system/sway-session.service << 'SERVICE'
     [Unit]
     Description=Sway Wayland Compositor Session
-    After=network.target
+    After=network.target seatd.service
+    Wants=seatd.service
 
     [Service]
     Type=simple
     User={user}
+    Group={user}
     Environment=XDG_RUNTIME_DIR=/run/user/1000
-    Environment=WLR_BACKENDS=drm
-    Environment=WLR_RENDERER=vulkan
+    Environment=WAYLAND_DISPLAY=wayland-1
     Environment=TMPDIR=/var/tmp
 
-    # Создаем директорию для Wayland-сокетов
+    StandardOutput=journal
+    StandardError=journal
+
+    Environment=XDG_RUNTIME_DIR=/run/user/1000
+    Environment=WLR_BACKENDS=drm
+    Environment=TMPDIR=/var/tmp
+    Environment=LIBSEAT_BACKEND=seatd
+
     ExecStartPre=/bin/mkdir -p /run/user/1000
-    ExecStartPre=/bin/chown {user}:{user} /run/user/1000
+    ExecStartPre=/bin/chown user:user /run/user/1000
     ExecStartPre=/bin/chmod 0700 /run/user/1000
 
     ExecStart=/usr/bin/sway
     Restart=on-failure
-    RestartSec=10
-
-    [Install]
+    RestartSec=5[Install]
     WantedBy=multi-user.target
     SERVICE
   - |
@@ -255,10 +252,11 @@ runcmd:
     [Service]
     Type=simple
     User={user}
+    Group={user}
     Environment=XDG_RUNTIME_DIR=/run/user/1000
     Environment=WAYLAND_DISPLAY=wayland-1
     Environment=TMPDIR=/var/tmp
-
+    
     ExecStart=/opt/farm/steam-launcher.sh
     Restart=on-failure
     RestartSec=10
@@ -266,6 +264,7 @@ runcmd:
     [Install]
     WantedBy=multi-user.target
     SERVICE
+    
   - systemctl daemon-reload
   - systemctl enable sway-session.service
   - systemctl enable steam-farm.service

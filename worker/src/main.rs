@@ -364,7 +364,7 @@ fn cmd_create(
         }
     }
 
-    if let Err(e) = image::resize_image(&overlay_path, "10G") {
+    if let Err(e) = image::resize_image(&overlay_path, "25G") {
         eprintln!("Failed to resize disk: {e}");
         std::process::exit(1);
     }
