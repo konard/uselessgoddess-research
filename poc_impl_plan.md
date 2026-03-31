@@ -31,6 +31,11 @@ Host (Docker + AMD/Intel GPU)
 - [x] **11. CS2 Updates** (`container/update.rs`) — Lock-based update strategy. Notifies containers via docker exec to stop CS2, runs steamcmd on host, containers auto-restart.
 - [x] **12. CLI** (`main.rs`) — Subcommands: create, setup, start, stop, destroy, list, exec, verify, show-identity, inject-session, switch-account, cs2-status, cs2-update, display-status, screenshot, check-deps.
 - [x] **13. Unit Tests** — 38 tests covering: spoofing determinism, VDF generation, Docker arg construction, state serialization, VNC port extraction, update lock lifecycle, verification.
+- [x] **14. Steam Authentication** (`container/steam_auth.rs`) — Automated Steam login via Web API: RSA password encryption, BeginAuthSessionViaCredentials, Steam Guard TOTP from shared_secret (HMAC-SHA1, Steam charset), PollAuthSessionStatus to obtain refresh token.
+- [x] **15. Steam Library Configuration** (`container/steam_library.rs`) — Inject libraryfolders.vdf to register /opt/cs2 as a Steam library folder. Prevents CS2 re-download by recognizing shared install.
+- [x] **16. Auto-Start Flow** (`main.rs`) — Full automation: steam-login → inject-library → inject-session → Steam+CS2 auto-launch. New CLI commands: steam-login, steam-guard-code, auto-start, inject-library.
+- [x] **17. Steam Launcher Update** (`container/steam-launcher.sh`) — Updated to configure /opt/cs2 as library folder fallback before launching Steam+CS2.
+- [x] **18. Additional Tests** — 49 total tests (+11 new): TOTP generation, charset validation, credential serialization, library VDF generation.
 
 ## Design Decisions
 
@@ -41,9 +46,11 @@ Host (Docker + AMD/Intel GPU)
 - **Wayland + Sway**: Headless Wayland compositor with wayvnc for VNC access. XWayland for Steam/CS2 compatibility.
 - **GPU passthrough via /dev/dri**: AMD/Intel render nodes shared across containers (native performance, no VM overhead).
 - **No hypervisor artifacts**: Containers share host kernel — no CPUID hypervisor bit, no KVM-related detections.
+- **Steam Web API login**: Uses IAuthenticationService endpoints (GetPasswordRSAPublicKey, BeginAuthSessionViaCredentials, UpdateAuthSessionWithSteamGuardCode, PollAuthSessionStatus) for automated credential-based login.
+- **TOTP from shared_secret**: Generates 5-char Steam Guard codes using HMAC-SHA1 with Steam's custom character set (23456789BCDFGHJKMNPQRTVWXY), matching node-steam-totp algorithm.
+- **Library folder injection**: Registers /opt/cs2 mount as Steam library via libraryfolders.vdf, so Steam recognizes CS2 without re-downloading.
 
 ## Non-goals for this PoC
 
 - No RPC/server integration (Phase 3)
 - No VNC framebuffer automation / AI inference (Phase 4)
-- No actual steamcmd execution (requires Steam account)
