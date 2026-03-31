@@ -1,5 +1,199 @@
 # RUN_INSTRUCTIONS — vmctl Worker PoC
 
+The worker supports two modes:
+- **VM mode**: Full KVM/QEMU virtual machines (original)
+- **Container mode**: Lightweight Docker containers (new, recommended for development)
+
+---
+
+# Container Mode (Recommended)
+
+## Prerequisites
+
+### Hardware
+- x86_64 CPU
+- AMD or Intel GPU with Vulkan support (via `/dev/dri/renderD128`)
+- Recommended: 16+ GB RAM for 4+ containers (each uses ~2 GB)
+
+### Software (host)
+| Package | Purpose |
+|---------|---------|
+| Docker | Container runtime |
+| GPU driver | AMD (amdgpu) or Intel (i915) with render nodes |
+| steamcmd | CS2 updates (optional) |
+
+### Install dependencies
+
+**Ubuntu / Debian:**
+```bash
+# Docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $(whoami)
+# Log out and back in
+
+# GPU driver (usually already installed)
+# AMD: sudo apt install mesa-vulkan-drivers
+# Intel: sudo apt install mesa-vulkan-drivers
+```
+
+## Build
+
+```bash
+cd worker
+cargo build --release
+
+# Build the Docker image
+cd container
+docker build -t cs2-farm:latest .
+cd ..
+```
+
+## Usage (Container Mode)
+
+### 1. Check host dependencies
+```bash
+./target/release/worker container-check-deps
+```
+
+### 2. Create a single container
+```bash
+./target/release/worker container-create \
+  --name cs2-farm-0 \
+  --ram 2g \
+  --cpus 2.0 \
+  --vnc-port 5901 \
+  --cs2-shared-dir /opt/cs2-shared
+```
+
+### 3. Batch-create multiple containers
+```bash
+./target/release/worker container-setup \
+  --count 4 \
+  --prefix cs2-farm \
+  --ram 2g \
+  --cpus 2.0 \
+  --vnc-start 5901 \
+  --cs2-shared-dir /opt/cs2-shared
+```
+
+### 4. Container lifecycle
+```bash
+./target/release/worker container-list
+./target/release/worker container-start cs2-farm-0
+./target/release/worker container-stop cs2-farm-0
+./target/release/worker container-destroy cs2-farm-0
+```
+
+### 5. Execute commands inside container
+```bash
+./target/release/worker container-exec cs2-farm-0 --cmd "uname -a"
+./target/release/worker container-exec cs2-farm-0 --cmd "vulkaninfo --summary"
+./target/release/worker container-exec cs2-farm-0 --cmd "cat /etc/machine-id"
+```
+
+### 6. Verify hardware spoofing
+```bash
+./target/release/worker container-verify cs2-farm-0
+./target/release/worker container-verify cs2-farm-0 --json
+```
+
+### 7. Show spoofed identity
+```bash
+./target/release/worker container-show-identity cs2-farm-0
+```
+
+### 8. Steam session injection
+```bash
+./target/release/worker container-inject-session cs2-farm-0 \
+  --account mysteamuser \
+  --token "eyJhbGciOi..." \
+  --steam-id 76561198012345678 \
+  --persona "FarmBot"
+
+# Switch to different account
+./target/release/worker container-switch-account cs2-farm-0 \
+  --account otheruser \
+  --token "eyJhbGciOi..." \
+  --steam-id 76561198087654321 \
+  --persona "FarmBot2"
+```
+
+### 9. CS2 updates
+```bash
+./target/release/worker cs2-status
+./target/release/worker container-cs2-update \
+  --shared-dir /opt/cs2-shared \
+  --containers cs2-farm-0 --containers cs2-farm-1
+```
+
+### 10. Display management
+```bash
+# Check if Wayland/VNC is ready
+./target/release/worker container-display-status cs2-farm-0
+
+# Take a screenshot
+./target/release/worker container-screenshot cs2-farm-0 --output /tmp/screenshot.png
+
+# Connect via VNC (manual)
+vncviewer localhost:5901
+```
+
+## Container Architecture
+
+```
+Host (Linux + Docker + GPU driver)
+│
+├── worker binary (this tool)
+│   ├── container-create    → docker run + spoof files + GPU + VNC
+│   ├── container-setup     → batch create N containers
+│   ├── container-exec      → docker exec (replaces Guest Agent)
+│   ├── container-verify    → check spoofing via docker exec
+│   ├── container-inject    → write Steam session via docker exec
+│   └── container-cs2-update → steamcmd on host, notify containers
+│
+├── /var/lib/vmctl/container-spoof/{name}/
+│   ├── dmi/sys_vendor, product_name, product_serial, ...
+│   └── machine-id
+│
+├── /opt/cs2-shared/          → CS2 installation (bind-mounted read-only)
+│
+└── Docker containers (each):
+    ├── Ubuntu 24.04 + Mesa Vulkan (AMD radv / Intel anv)
+    ├── Sway (Wayland compositor, headless)
+    ├── wayvnc (VNC server on :5900)
+    ├── XWayland (for Steam/CS2)
+    ├── /dev/dri (GPU render nodes from host)
+    ├── /sys/class/dmi/id/* (spoofed, bind-mounted)
+    ├── /etc/machine-id (spoofed, bind-mounted)
+    ├── --mac-address (spoofed by Docker)
+    └── /opt/cs2 (CS2 shared mount, read-only)
+```
+
+### Container Spoofing (vs VM)
+
+| Aspect | VM (KVM/QEMU) | Container (Docker) |
+|--------|---------------|-------------------|
+| MAC address | libvirt XML | `--mac-address` flag |
+| SMBIOS/DMI | XML sysinfo block | Bind-mount fake /sys/class/dmi/id/ files |
+| Machine-ID | cloud-init | Bind-mount fake /etc/machine-id |
+| Disk serial | XML `<serial>` | N/A (container uses overlay FS) |
+| CPU info | CPUID hiding | Host kernel (no hypervisor bit) |
+| GPU | VirtIO-GPU Venus (~43% perf) | /dev/dri passthrough (native perf) |
+| Hypervisor detection | Must hide KVM | Not applicable (shares host kernel) |
+
+### Container Advantages over VM
+
+1. **No hypervisor overhead**: Containers share the host kernel, no CPUID/timing artifacts
+2. **Native GPU performance**: /dev/dri passthrough vs VirtIO-GPU Venus (~43% overhead)
+3. **Lower RAM usage**: No guest OS overhead (~150 MB vs ~800 MB per instance)
+4. **Faster startup**: Seconds vs minutes for VM boot + cloud-init
+5. **Simpler setup**: No KVM, libvirt, QEMU, virtiofsd required
+6. **Better disk efficiency**: Docker layers with CoW vs qcow2 overlays
+
+---
+
+# VM Mode (Original)
+
 ## Prerequisites
 
 ### Hardware
