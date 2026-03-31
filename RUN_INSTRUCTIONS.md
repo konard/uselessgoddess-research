@@ -92,7 +92,42 @@ docker build -t cs2-farm:latest -f container/Dockerfile container/
 ./target/release/worker show-identity cs2-farm-0
 ```
 
-### 8. Steam session injection
+### 8. Steam login (get refresh token from credentials)
+```bash
+# Login with username/password + Steam Guard TOTP (shared_secret)
+./target/release/worker steam-login \
+  --username mysteamuser \
+  --password "mypassword" \
+  --shared-secret "base64encodedSharedSecret=="
+
+# Output as JSON (for scripting)
+./target/release/worker steam-login \
+  --username mysteamuser \
+  --password "mypassword" \
+  --shared-secret "base64encodedSharedSecret==" \
+  --json
+```
+
+### 9. Generate Steam Guard TOTP code
+```bash
+./target/release/worker steam-guard-code \
+  --shared-secret "base64encodedSharedSecret=="
+```
+
+### 10. Auto-start (full automation: login + library + session + CS2 launch)
+```bash
+# One command to do everything:
+# 1) Login to Steam → get refresh token
+# 2) Inject library folders (add /opt/cs2)
+# 3) Inject session → triggers Steam + CS2 auto-launch
+./target/release/worker auto-start cs2-farm-0 \
+  --username mysteamuser \
+  --password "mypassword" \
+  --shared-secret "base64encodedSharedSecret==" \
+  --persona "FarmBot"
+```
+
+### 11. Steam session injection (manual, with pre-existing token)
 ```bash
 ./target/release/worker inject-session cs2-farm-0 \
   --account mysteamuser \
@@ -108,7 +143,13 @@ docker build -t cs2-farm:latest -f container/Dockerfile container/
   --persona "FarmBot2"
 ```
 
-### 9. CS2 updates
+### 12. Inject Steam library folders
+```bash
+# Add /opt/cs2 as Steam library so CS2 isn't re-downloaded
+./target/release/worker inject-library cs2-farm-0
+```
+
+### 13. CS2 updates
 ```bash
 ./target/release/worker cs2-status
 ./target/release/worker cs2-update \
@@ -116,7 +157,7 @@ docker build -t cs2-farm:latest -f container/Dockerfile container/
   --containers cs2-farm-0 --containers cs2-farm-1
 ```
 
-### 10. Display management
+### 14. Display management
 ```bash
 # Check if Wayland/VNC is ready
 ./target/release/worker display-status cs2-farm-0
@@ -138,7 +179,10 @@ Host (Linux + Docker + GPU driver)
 │   ├── setup           → batch create N containers
 │   ├── exec            → docker exec (command execution)
 │   ├── verify          → check spoofing via docker exec
+│   ├── steam-login     → Steam Web API login → refresh token
+│   ├── auto-start      → login + inject library + inject session
 │   ├── inject-session  → write Steam session via docker exec
+│   ├── inject-library  → add /opt/cs2 as Steam library folder
 │   └── cs2-update      → steamcmd on host, notify containers
 │
 ├── /var/lib/vmctl/container-spoof/{name}/
@@ -167,6 +211,17 @@ Host (Linux + Docker + GPU driver)
 | SMBIOS/DMI | Bind-mount fake files over `/sys/class/dmi/id/` |
 | Machine-ID | Bind-mount fake `/etc/machine-id` |
 | No hypervisor artifacts | Containers share host kernel (no CPUID hypervisor bit) |
+
+## Steam Authentication Flow
+
+The `steam-login` and `auto-start` commands use the Steam Web API for credential-based authentication:
+
+1. **Get RSA Key** — `GET /IAuthenticationService/GetPasswordRSAPublicKey/v1/`
+2. **Encrypt password** — RSA PKCS#1 v1.5 encryption with Steam's public key
+3. **Begin Auth** — `POST /IAuthenticationService/BeginAuthSessionViaCredentials/v1/`
+4. **Submit TOTP** — Generate 5-char code from `shared_secret` (HMAC-SHA1), submit via `UpdateAuthSessionWithSteamGuardCode`
+5. **Poll for token** — `POST /IAuthenticationService/PollAuthSessionStatus/v1/` → returns `refresh_token` (~200 day validity)
+6. **Inject session** — Write token to container's `config.vdf` + `loginusers.vdf`
 
 ## Next Steps (beyond this PoC)
 

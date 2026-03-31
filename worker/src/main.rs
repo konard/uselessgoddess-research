@@ -4,6 +4,7 @@ mod spoof;
 use clap::{Parser, Subcommand};
 
 use container::session::SteamSession;
+use container::steam_auth::SteamCredentials;
 use container::update::UpdateConfig;
 
 #[derive(Parser)]
@@ -181,6 +182,62 @@ enum Commands {
         #[arg(short, long, default_value = "/tmp/cs2-screenshot.png")]
         output: String,
     },
+
+    /// Login to Steam with username/password/shared_secret and get a refresh token
+    SteamLogin {
+        #[arg(long)]
+        username: String,
+
+        #[arg(long)]
+        password: String,
+
+        /// Base64-encoded shared_secret for Steam Guard TOTP
+        #[arg(long)]
+        shared_secret: Option<String>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Generate a Steam Guard TOTP code from a shared secret
+    SteamGuardCode {
+        /// Base64-encoded shared_secret
+        #[arg(long)]
+        shared_secret: String,
+    },
+
+    /// Full auto-start: login to Steam, inject session, configure library, start CS2
+    AutoStart {
+        /// Container name
+        name: String,
+
+        #[arg(long)]
+        username: String,
+
+        #[arg(long)]
+        password: String,
+
+        /// Base64-encoded shared_secret for Steam Guard TOTP
+        #[arg(long)]
+        shared_secret: Option<String>,
+
+        #[arg(long, default_value = "FarmBot")]
+        persona: String,
+
+        /// Path to CS2 shared directory mount inside container
+        #[arg(long, default_value = "/opt/cs2")]
+        cs2_mount: String,
+    },
+
+    /// Inject Steam library folders config into a container (add /opt/cs2 as library)
+    InjectLibrary {
+        name: String,
+
+        /// CS2 mount path inside the container
+        #[arg(long, default_value = "/opt/cs2")]
+        cs2_mount: String,
+    },
 }
 
 fn main() {
@@ -252,6 +309,29 @@ fn main() {
         } => cmd_cs2_update(&shared_dir, &containers),
         Commands::DisplayStatus { name } => cmd_display_status(&name),
         Commands::Screenshot { name, output } => cmd_screenshot(&name, &output),
+        Commands::SteamLogin {
+            username,
+            password,
+            shared_secret,
+            json,
+        } => cmd_steam_login(&username, &password, shared_secret.as_deref(), json),
+        Commands::SteamGuardCode { shared_secret } => cmd_steam_guard_code(&shared_secret),
+        Commands::AutoStart {
+            name,
+            username,
+            password,
+            shared_secret,
+            persona,
+            cs2_mount,
+        } => cmd_auto_start(
+            &name,
+            &username,
+            &password,
+            shared_secret.as_deref(),
+            &persona,
+            &cs2_mount,
+        ),
+        Commands::InjectLibrary { name, cs2_mount } => cmd_inject_library(&name, &cs2_mount),
     }
 }
 
@@ -561,6 +641,112 @@ fn cmd_screenshot(name: &str, output: &str) {
         }
         Err(e) => {
             eprintln!("Screenshot failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_steam_login(username: &str, password: &str, shared_secret: Option<&str>, json: bool) {
+    let creds = SteamCredentials {
+        username: username.to_string(),
+        password: password.to_string(),
+        shared_secret: shared_secret.map(String::from),
+    };
+
+    println!("Logging in to Steam as '{username}'...");
+
+    match container::steam_auth::login(&creds) {
+        Ok(result) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                println!("Login successful!");
+                println!("  Account:       {}", result.account_name);
+                println!("  Steam ID:      {}", result.steam_id);
+                println!("  Refresh Token: {}", result.refresh_token);
+            }
+        }
+        Err(e) => {
+            eprintln!("Steam login failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_steam_guard_code(shared_secret: &str) {
+    match container::steam_auth::generate_steam_guard_code(shared_secret, 0) {
+        Ok(code) => println!("{code}"),
+        Err(e) => {
+            eprintln!("Failed to generate Steam Guard code: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_auto_start(
+    name: &str,
+    username: &str,
+    password: &str,
+    shared_secret: Option<&str>,
+    persona: &str,
+    cs2_mount: &str,
+) {
+    // Step 1: Login to Steam to get refresh token
+    let creds = SteamCredentials {
+        username: username.to_string(),
+        password: password.to_string(),
+        shared_secret: shared_secret.map(String::from),
+    };
+
+    println!("[1/3] Logging in to Steam as '{username}'...");
+    let login_result = match container::steam_auth::login(&creds) {
+        Ok(result) => {
+            println!("  Login successful (Steam ID: {})", result.steam_id);
+            result
+        }
+        Err(e) => {
+            eprintln!("Steam login failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Step 2: Inject Steam library folders (add CS2 shared dir)
+    println!("[2/3] Configuring Steam library in container '{name}'...");
+    match container::steam_library::inject_library_folders(name, Some(cs2_mount)) {
+        Ok(()) => println!("  Library folders configured ({cs2_mount})"),
+        Err(e) => {
+            eprintln!("Warning: library injection failed: {e}");
+            eprintln!("  Steam may re-download CS2. Continuing anyway...");
+        }
+    }
+
+    // Step 3: Inject session (this triggers steam-launcher.sh inside the container)
+    println!("[3/3] Injecting session into container '{name}'...");
+    let sess = SteamSession {
+        account_name: login_result.account_name.clone(),
+        refresh_token: login_result.refresh_token,
+        steam_id: login_result.steam_id,
+        persona_name: persona.to_string(),
+    };
+
+    match container::session::inject_session(name, &sess, None) {
+        Ok(()) => {
+            println!("  Session injected. Steam + CS2 will auto-launch.");
+            println!();
+            println!("Auto-start complete for account '{}'.", login_result.account_name);
+        }
+        Err(e) => {
+            eprintln!("Session injection failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_inject_library(name: &str, cs2_mount: &str) {
+    match container::steam_library::inject_library_folders(name, Some(cs2_mount)) {
+        Ok(()) => println!("Library folders configured in container '{name}' ({cs2_mount})"),
+        Err(e) => {
+            eprintln!("Library injection failed: {e}");
             std::process::exit(1);
         }
     }

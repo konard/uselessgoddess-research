@@ -12,6 +12,8 @@ pub mod display;
 pub mod exec;
 pub mod session;
 pub mod spoof;
+pub mod steam_auth;
+pub mod steam_library;
 pub mod update;
 pub mod verify;
 
