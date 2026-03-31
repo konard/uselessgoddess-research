@@ -1,37 +1,49 @@
-# PoC Implementation Plan — VM Worker CLI
+# PoC Implementation Plan — Container Worker CLI
 
 ## Architecture Overview
 
-The worker CLI (`vmctl`) manages KVM/QEMU virtual machines for CS2 case farming.
-It runs on any Linux host with KVM support and manages VM lifecycle, hardware spoofing,
-guest connectivity, session injection, and CS2 update coordination.
+The worker CLI manages Docker containers for CS2 case farming.
+It runs on any Linux host with AMD/Intel GPU support.
 
-### Module Breakdown
+```
+Host (Docker + AMD/Intel GPU)
+├── worker binary
+│   ├── create       → docker run + GPU + spoof mounts + VNC
+│   ├── exec         → docker exec (command execution)
+│   └── verify       → check spoofing via docker exec
+├── /var/lib/vmctl/container-spoof/{name}/dmi/  (fake DMI files)
+├── /opt/cs2-shared/  (bind-mounted read-only into containers)
+└── Containers: Ubuntu 24.04 + Sway + wayvnc + /dev/dri
+```
 
-- [x] **1. Dependency Checker** (`deps.rs`) — Validate host: QEMU version ≥ 9.2, libvirt, KVM module, virtiofs, qemu-img, required kernel modules.
-- [x] **2. Hardware Spoofing** (`spoof.rs`) — Generate realistic MAC (real OUI), SMBIOS (manufacturer/product/serial), disk serials. Deterministic per-VM seed.
-- [x] **3. VM Config / XML Generation** (`config.rs`) — Produce libvirt-compatible XML from structured Rust types. CPU/RAM, VirtIO-GPU Venus, spoofed identifiers, virtiofs mounts, VNC display. Enhanced anti-detection: KVM hidden, Hyper-V vendor_id, vmport off, memballoon disabled, smbios sysinfo mode, memory backing for virtiofs.
-- [x] **4. Disk Management** (`disk.rs`) — qcow2 backing store + per-VM overlay creation via `qemu-img`.
-- [x] **5. VM Lifecycle** (`vm.rs`) — Create, start, stop, destroy, list VMs. Wraps `virsh` commands (no libvirt C bindings needed for PoC).
-- [x] **6. CLI Interface** (`main.rs`) — Subcommands: `check-deps`, `create`, `start`, `stop`, `destroy`, `list`, `setup`, `verify`, `ga-ping`, `ga-exec`, `inject-session`, `switch-account`, `cs2-status`, `cs2-update`, `cloud-init`.
-- [x] **7. Guest Agent** (`guest_agent.rs`) — QEMU Guest Agent interface via `virsh qemu-agent-command`. Ping, exec, file read/write, network queries. No network required — uses virtio-serial channel.
-- [x] **8. Spoofing Verification** (`verify.rs`) — Verify hardware spoofing inside running VMs via guest agent. Checks MAC, SMBIOS, disk serial, hypervisor visibility, NIC driver.
-- [x] **9. Base Image Setup** (`image.rs`) — Cloud-init configuration generation for automatic VM provisioning. Creates user-data/meta-data with qemu-guest-agent, Steam (silent install via debconf), mesa/Vulkan, sway + wayvnc, systemd services. Fixes: /tmp remount from tmpfs to disk, TMPDIR=/var/tmp for Steam, sway with Mod1 (Alt) modifier.
-- [x] **10. CS2 Update Management** (`update.rs`) — Centralized CS2 update strategy using virtiofs shared directory. Lock-based coordination, steamcmd integration, VM notification.
-- [x] **11. Steam Session Injection** (`session.rs`) — Inject Steam session files (config.vdf, loginusers.vdf) via guest agent for automatic login. Refresh token based, no user interaction needed. Account switching support.
-- [x] **12. Unit Tests** — 60 tests covering: spoofing determinism, XML generation, anti-detection features, base64 encoding, VDF generation, cloud-init, update lock lifecycle, verification parsing.
+## Module Breakdown
 
-### Non-goals for this PoC
+- [x] **1. Container Dockerfile** (`container/Dockerfile`) — Ubuntu 24.04 base with Mesa/Vulkan (AMD radv, Intel anv), Sway, wayvnc, XWayland, Steam dependencies. GPU via /dev/dri passthrough.
+- [x] **2. Container Entrypoint** (`container/entrypoint.sh`) — Sets up XDG runtime, applies spoofed machine-id, starts Sway compositor and steam-launcher.
+- [x] **3. Hardware Spoofing** (`container/spoof.rs`) — Generate fake DMI files (/sys/class/dmi/id/), machine-id, and Docker bind-mount arguments. Deterministic per-container. MAC spoofing via Docker --mac-address flag.
+- [x] **4. Identity Generation** (`spoof.rs`) — Generate realistic MAC (real OUI), SMBIOS (manufacturer/product/serial), disk serials. Deterministic from container name hash.
+- [x] **5. Container Exec** (`container/exec.rs`) — Docker exec wrapper. Command execution, file read/write via docker exec + tee/cat, docker cp for large files.
+- [x] **6. Container Lifecycle** (`container/mod.rs`) — Create, start, stop, kill, remove, list containers via Docker CLI. GPU passthrough (/dev/dri), MAC/DMI spoofing, CS2 shared mount, VNC port mapping.
+- [x] **7. Steam Session Injection** (`container/session.rs`) — Steam session injection via docker exec. Writes config.vdf + loginusers.vdf with refresh token for auto-login.
+- [x] **8. Display Management** (`container/display.rs`) — Wayland display management. Check display readiness (Sway + wayvnc), screenshot via grim, swaymsg input.
+- [x] **9. Spoofing Verification** (`container/verify.rs`) — Verify spoofing inside containers. Checks DMI files, machine-id, MAC address, GPU render node, Vulkan availability.
+- [x] **10. Dependency Checks** (`container/deps.rs`) — Check Docker daemon, GPU render nodes, Docker image, CS2 shared directory.
+- [x] **11. CS2 Updates** (`container/update.rs`) — Lock-based update strategy. Notifies containers via docker exec to stop CS2, runs steamcmd on host, containers auto-restart.
+- [x] **12. CLI** (`main.rs`) — Subcommands: create, setup, start, stop, destroy, list, exec, verify, show-identity, inject-session, switch-account, cs2-status, cs2-update, display-status, screenshot, check-deps.
+- [x] **13. Unit Tests** — 38 tests covering: spoofing determinism, VDF generation, Docker arg construction, state serialization, VNC port extraction, update lock lifecycle, verification.
+
+## Design Decisions
+
+- **Deterministic spoofing**: Each container gets reproducible hardware IDs from a name hash.
+- **Shared CS2**: Single CS2 installation on host bind-mounted read-only into all containers.
+- **Refresh token injection**: Steam auto-login via refresh tokens written to config.vdf (valid ~200 days).
+- **Container spoofing**: Bind-mount fake DMI files over /sys/class/dmi/id/, custom machine-id, Docker MAC address flag.
+- **Wayland + Sway**: Headless Wayland compositor with wayvnc for VNC access. XWayland for Steam/CS2 compatibility.
+- **GPU passthrough via /dev/dri**: AMD/Intel render nodes shared across containers (native performance, no VM overhead).
+- **No hypervisor artifacts**: Containers share host kernel — no CPUID hypervisor bit, no KVM-related detections.
+
+## Non-goals for this PoC
+
 - No RPC/server integration (Phase 3)
 - No VNC framebuffer automation / AI inference (Phase 4)
 - No actual steamcmd execution (requires Steam account)
-
-### Design Decisions
-- **No libvirt C bindings**: Use `virsh` CLI wrapper for PoC simplicity and portability.
-- **Hybrid approach (no mini-worker)**: Uses QEMU Guest Agent (standard component) + systemd service inside VM, controlled from host. No custom daemon inside guest reduces VAC detection risk.
-- **Deterministic spoofing**: Each VM gets reproducible hardware IDs from a seed (VM name hash).
-- **OS-agnostic**: No hard dependency on specific distro; checks required tools at runtime.
-- **virtiofs for CS2 sharing**: Single CS2 installation on host shared to all VMs via virtiofs (saves ~30GB per VM).
-- **Refresh token injection**: Steam auto-login via refresh tokens written to config.vdf (valid ~200 days).
-- **cloud-init provisioning**: Automated VM setup with all required packages and services.
-- **Anti-detection hardening**: KVM hidden, hypervisor CPUID disabled, Hyper-V vendor_id spoofed, vmport off, memballoon disabled, e1000e NIC (not virtio-net).
