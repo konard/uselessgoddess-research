@@ -25,9 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mesa-vulkan-drivers \
     libvulkan1 \
     vulkan-tools \
-    # Mesa OpenGL (for sway/wlroots)
-    libegl1-mesa \
-    libgles2-mesa \
+    libegl1 \
+    libgles2 \
     libgl1-mesa-dri \
     libglx-mesa0 \
     # DRM/DRI userspace
@@ -101,7 +100,8 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-in
     && rm -rf /var/lib/apt/lists/*
 
 # --- Layer 2: Farm user ---
-RUN useradd -m -s /bin/bash -G video,render farmuser
+RUN groupadd -f render && \
+    useradd -m -s /bin/bash -G video,render farmuser
 
 # --- Layer 3: Sway configuration ---
 RUN mkdir -p /home/farmuser/.config/sway && \

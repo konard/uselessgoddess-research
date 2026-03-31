@@ -5,7 +5,7 @@
 set $mod Mod1
 
 # Headless output at CS2 resolution
-output Virtual-1 {
+output HEADLESS-1 {
     mode 384x288
     scale 1
 }
@@ -17,7 +17,7 @@ titlebar_border_thickness 0
 titlebar_padding 0
 
 # Start wayvnc for remote display access
-exec wayvnc --output=Virtual-1 0.0.0.0 5900
+exec wayvnc --output=HEADLESS-1 0.0.0.0 5900
 
 # No idle/swaylock (farming session runs indefinitely)
 exec swaymsg inhibit_idle open
