@@ -1,64 +1,41 @@
-//! Docker container lifecycle management for CS2 farming.
-//!
-//! This module is the container equivalent of `vm.rs` + `config.rs`.
-//! It manages the full lifecycle of CS2 farming containers:
-//! - Create (docker run with GPU, spoofing, CS2 shared mount)
-//! - Start / Stop / Destroy / Remove
-//! - List running containers
-//!
-//! Each container gets:
-//! - Access to GPU via /dev/dri (AMD/Intel render nodes)
-//! - Spoofed hardware identity (MAC, machine-id, DMI files)
-//! - Shared CS2 installation via bind mount
-//! - Wayland (Sway) compositor + wayvnc for display
-//! - Unique hostname and container name
-
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::container_spoof;
-use crate::spoof::{self, HwIdentity};
+use crate::container::spoof as container_spoof;
+use crate::spoof::HwIdentity;
+use crate::spoof::generate_identity;
+
+pub mod deps;
+pub mod display;
+pub mod exec;
+pub mod session;
+pub mod spoof;
+pub mod update;
+pub mod verify;
 
 #[derive(Debug, Error)]
 pub enum ContainerError {
     #[error("docker command failed: {0}")]
     Docker(String),
-    #[error("container `{0}` not found")]
-    NotFound(String),
-    #[error("container `{0}` already exists")]
-    AlreadyExists(String),
     #[error("spoof error: {0}")]
     Spoof(#[from] container_spoof::ContainerSpoofError),
-    #[error("I/O error: {0}")]
-    Io(String),
 }
 
-/// Container configuration for creation.
 #[derive(Debug, Clone)]
 pub struct ContainerConfig {
-    /// Container name (also used as seed for hardware spoofing).
     pub name: String,
-    /// Docker image to use.
     pub image: String,
-    /// RAM limit (e.g., "2g").
     pub memory_limit: String,
-    /// CPU limit (e.g., "2.0" for 2 cores).
     pub cpu_limit: String,
-    /// VNC port to expose on host.
     pub vnc_port: u16,
-    /// Hardware identity for spoofing.
     pub hw: HwIdentity,
-    /// Host path for shared CS2 directory.
     pub cs2_shared_dir: Option<String>,
-    /// Host directory to store spoof files.
     pub spoof_dir: String,
-    /// Additional Docker flags (e.g., for custom networks).
     pub extra_args: Vec<String>,
 }
 
-/// State of a container.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ContainerState {
@@ -103,7 +80,6 @@ impl From<&str> for ContainerState {
     }
 }
 
-/// Info about a container.
 #[derive(Debug, Clone, Serialize)]
 pub struct ContainerInfo {
     pub name: String,
@@ -112,7 +88,6 @@ pub struct ContainerInfo {
     pub vnc_port: Option<u16>,
 }
 
-/// Run a docker command and return stdout on success.
 fn docker(args: &[&str]) -> Result<String, ContainerError> {
     let output = Command::new("docker")
         .args(args)
@@ -127,11 +102,7 @@ fn docker(args: &[&str]) -> Result<String, ContainerError> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Create and start a new container with GPU access, spoofing, and CS2 mount.
-///
-/// This is the container equivalent of `cmd_create` + `vm::define` + `vm::start`.
 pub fn create(config: &ContainerConfig) -> Result<String, ContainerError> {
-    // Generate spoof files on host
     let spoof_files =
         container_spoof::create_spoof_files(&config.spoof_dir, &config.name, &config.hw)?;
 
@@ -144,47 +115,33 @@ pub fn create(config: &ContainerConfig) -> Result<String, ContainerError> {
         config.name.clone(),
     ];
 
-    // Resource limits
     args.push("--memory".into());
     args.push(config.memory_limit.clone());
     args.push("--cpus".into());
     args.push(config.cpu_limit.clone());
 
-    // GPU access: pass through entire /dev/dri for AMD/Intel render nodes
     args.push("--device".into());
     args.push("/dev/dri:/dev/dri".into());
 
-    // MAC address spoofing
     args.extend(container_spoof::mac_docker_arg(&config.hw.mac_address));
-
-    // Hardware spoofing bind mounts (DMI, machine-id)
     args.extend(spoof_files.docker_args);
 
-    // VNC port mapping
     args.push("-p".into());
     args.push(format!("{}:5900", config.vnc_port));
 
-    // CS2 shared directory (read-only bind mount)
     if let Some(ref cs2_dir) = config.cs2_shared_dir {
         args.push("-v".into());
         args.push(format!("{cs2_dir}:/opt/cs2:ro"));
     }
 
-    // Security: needed for /sys bind mounts and network config
     args.push("--cap-add".into());
     args.push("SYS_ADMIN".into());
-    // Needed for sway/wlroots
     args.push("--cap-add".into());
     args.push("SYS_NICE".into());
-
-    // IPC for shared memory (needed by Wayland/Vulkan)
     args.push("--ipc".into());
     args.push("host".into());
 
-    // Extra user-provided arguments
     args.extend(config.extra_args.clone());
-
-    // Image
     args.push(config.image.clone());
 
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -193,22 +150,18 @@ pub fn create(config: &ContainerConfig) -> Result<String, ContainerError> {
     Ok(output.trim().to_string())
 }
 
-/// Start a stopped container.
 pub fn start(name: &str) -> Result<String, ContainerError> {
     docker(&["start", name])
 }
 
-/// Stop a running container (graceful).
 pub fn stop(name: &str) -> Result<String, ContainerError> {
     docker(&["stop", "-t", "10", name])
 }
 
-/// Force-kill a container.
 pub fn kill(name: &str) -> Result<String, ContainerError> {
     docker(&["kill", name])
 }
 
-/// Remove a container (must be stopped first, or use force=true).
 pub fn remove(name: &str, force: bool) -> Result<String, ContainerError> {
     if force {
         docker(&["rm", "-f", name])
@@ -217,15 +170,11 @@ pub fn remove(name: &str, force: bool) -> Result<String, ContainerError> {
     }
 }
 
-/// Get the state of a container.
 pub fn state(name: &str) -> Result<ContainerState, ContainerError> {
     let output = docker(&["inspect", "-f", "{{.State.Status}}", name])?;
     Ok(ContainerState::from(output.trim()))
 }
 
-/// List all CS2 farm containers.
-///
-/// Filters containers by the "cs2-farm" label or name prefix.
 pub fn list_all(prefix: &str) -> Result<Vec<ContainerInfo>, ContainerError> {
     let format_str = "{{.Names}}\t{{.State}}\t{{.Image}}\t{{.Ports}}";
     let filter = format!("name=^{prefix}");
@@ -255,33 +204,27 @@ pub fn list_all(prefix: &str) -> Result<Vec<ContainerInfo>, ContainerError> {
     Ok(containers)
 }
 
-/// Extract the host VNC port from Docker's port mapping string.
-///
-/// Input format: "0.0.0.0:5901->5900/tcp" → Some(5901)
 fn extract_vnc_port(ports_str: &str) -> Option<u16> {
     for mapping in ports_str.split(',') {
         let mapping = mapping.trim();
-        if mapping.contains("5900") {
-            // Format: "0.0.0.0:5901->5900/tcp" or ":::5901->5900/tcp"
-            if let Some(host_part) = mapping.split("->").next()
-                && let Some(port_str) = host_part.rsplit(':').next()
-                && let Ok(port) = port_str.parse::<u16>()
-            {
-                return Some(port);
-            }
+        if mapping.contains("5900")
+            && let Some(host_part) = mapping.split("->").next()
+            && let Some(port_str) = host_part.rsplit(':').next()
+            && let Ok(port) = port_str.parse::<u16>()
+        {
+            return Some(port);
         }
     }
     None
 }
 
-/// Create a ContainerConfig with sensible defaults.
 pub fn default_config(
     name: &str,
     image: &str,
     vnc_port: u16,
     cs2_shared_dir: Option<&str>,
 ) -> ContainerConfig {
-    let hw = spoof::generate_identity(name);
+    let hw = generate_identity(name);
     ContainerConfig {
         name: name.to_string(),
         image: image.to_string(),
@@ -324,10 +267,7 @@ mod tests {
 
     #[test]
     fn test_extract_vnc_port() {
-        assert_eq!(
-            extract_vnc_port("0.0.0.0:5901->5900/tcp"),
-            Some(5901)
-        );
+        assert_eq!(extract_vnc_port("0.0.0.0:5901->5900/tcp"), Some(5901));
         assert_eq!(
             extract_vnc_port("0.0.0.0:5901->5900/tcp, :::5901->5900/tcp"),
             Some(5901)

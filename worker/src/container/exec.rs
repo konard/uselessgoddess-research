@@ -1,15 +1,3 @@
-//! Docker exec wrapper — replaces QEMU Guest Agent for containers.
-//!
-//! In VM mode, the worker communicates with guests via the QEMU Guest Agent
-//! (virsh qemu-agent-command). In container mode, `docker exec` provides
-//! equivalent functionality with simpler semantics:
-//! - Command execution: `docker exec <container> sh -c "<cmd>"`
-//! - File write: `docker exec -i <container> tee <path>`
-//! - File read: `docker exec <container> cat <path>`
-//!
-//! This module provides a compatible interface to `guest_agent` so that
-//! session injection and update modules can work with both backends.
-
 use std::process::Command;
 use thiserror::Error;
 
@@ -103,8 +91,6 @@ pub fn exec_as_user(
 }
 
 /// Write a file inside the container using `docker exec` + `tee`.
-///
-/// This is the container equivalent of `guest_agent::write_file`.
 pub fn write_file(
     container_name: &str,
     guest_path: &str,
@@ -157,8 +143,6 @@ pub fn write_file(
 }
 
 /// Read a file from inside the container using `docker exec cat`.
-///
-/// This is the container equivalent of `guest_agent::read_file`.
 pub fn read_file(container_name: &str, guest_path: &str) -> Result<Vec<u8>, ContainerExecError> {
     let output = Command::new("docker")
         .args(["exec", container_name, "cat", guest_path])

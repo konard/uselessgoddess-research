@@ -1,8 +1,3 @@
-//! Host dependency checks for container mode.
-//!
-//! Container mode requires Docker and GPU render nodes instead of
-//! QEMU, libvirt, and KVM.
-
 use std::process::Command;
 
 use thiserror::Error;
@@ -11,12 +6,6 @@ use thiserror::Error;
 pub enum DepError {
     #[error("{name}: not found — {detail}")]
     NotFound { name: String, detail: String },
-    #[error("{name}: version {found} < required {required}")]
-    VersionTooLow {
-        name: String,
-        found: String,
-        required: String,
-    },
     #[error("{name}: check failed — {detail}")]
     CheckFailed { name: String, detail: String },
 }
@@ -164,14 +153,13 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_error_version() {
-        let err = DepError::VersionTooLow {
+    fn test_dep_error_check_failed() {
+        let err = DepError::CheckFailed {
             name: "docker".into(),
-            found: "19.03".into(),
-            required: "20.10".into(),
+            detail: "daemon not accessible".into(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("19.03"));
-        assert!(msg.contains("20.10"));
+        assert!(msg.contains("docker"));
+        assert!(msg.contains("daemon not accessible"));
     }
 }

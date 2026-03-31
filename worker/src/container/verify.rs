@@ -1,10 +1,5 @@
-//! Hardware spoofing verification for containers.
-//!
-//! Container equivalent of `verify.rs`. Checks that spoofed hardware
-//! identifiers are visible inside the running container.
-
-use crate::container_exec;
-use crate::container_spoof;
+use crate::container::exec as container_exec;
+use crate::container::spoof as container_spoof;
 use crate::spoof::HwIdentity;
 
 use serde::Serialize;

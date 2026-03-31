@@ -1,22 +1,4 @@
-//! Display capture and input injection for containers.
-//!
-//! Each container runs Sway (Wayland compositor) + wayvnc, exposing
-//! the display on port 5900 inside the container (mapped to a host port).
-//!
-//! For automated control, we have two approaches:
-//!
-//! 1. **VNC**: Connect to wayvnc for both framebuffer capture and input
-//!    injection. This works well with existing VNC client libraries.
-//!
-//! 2. **Direct exec**: Use `docker exec` to run tools inside the container:
-//!    - `swaymsg` for window management
-//!    - `wlr-randr` for output info
-//!    - Screenshot via `grim` (if installed) or sway IPC
-//!
-//! This module provides helper functions for common display operations.
-//! The actual VNC client integration is left to the RPC/server layer.
-
-use crate::container_exec::{self, ContainerExecError};
+use crate::container::exec::{self as container_exec, ContainerExecError};
 
 use thiserror::Error;
 
